@@ -1,0 +1,519 @@
+---
+title: "SOI Measurements"
+author: "All"
+format: html
+execute:
+  echo: false
+  warning: false
+editor: visual
+---
+
+```{r}
+library(stringr)
+library(gridExtra)
+library(maptools)
+library(ggplot2)
+library(ggalt)
+library(ggthemes)
+library(tibble)
+library(viridis)
+library(knitr)
+library(plotly)
+library(egg)
+library(ggpubr)
+library(GillespieSSA)
+library(MASS)
+library(rgl)
+library(zoo)
+library(Sim.DiffProc)
+library(doParallel)
+library(ggsci)
+library(deSolve)
+library(pracma)
+library(diffeqr)
+library(parallel)
+library(tidymodels)
+library(data.table)
+library(glue)
+
+# source("G:\\Other computers\\Il mio laptop\\Francesco\\Università\\Articoli\\Marta\\GSM2\\Dose Rate\\Code\\utilities_doserate.R")
+
+theme_set(theme_bw()+theme(plot.title = element_text(size=20, color="black"),
+                           axis.title.x = element_text(size=20, color="black"),
+                           axis.title.y = element_text(size=20, color="black"),
+                           axis.text.x = element_text(size=20, color="black"),
+                           axis.text.y = element_text(size=20, color="black"),
+                           legend.title = element_blank(),
+                           legend.text = element_text(size=20, color="black")))
+
+cb_a <- c("#0072B2","#000000","#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+cb_b <- c("#000000", "#E69F00", "#0072B2", "#6A3D9A", "#009E73", "#F0E442", "#56B4E9", "#D55E00", "#CC79A7")
+cb_c <- c( "#56B4E9", "#009E73", "#0072B2", "#D55E00", "#CC79A7")
+
+cb_nob <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+c25 <- c(
+  "dodgerblue2", "#E31A1C", # red
+  "green4",
+  "#6A3D9A", # purple
+  "#FF7F00", # orange
+  "black", "gold1",
+  "skyblue2", "#FB9A99", # lt pink
+  "palegreen2",
+  "#CAB2D6", # lt purple
+  "#FDBF6F", # lt orange
+  "gray70", "khaki2",
+  "maroon", "orchid1", "deeppink1", "blue1", "steelblue4",
+  "darkturquoise", "green1", "yellow4", "yellow3",
+  "darkorange4", "brown"
+)
+```
+
+```{r}
+compute_calibration_adc <- function(m, df_count, bin){
+
+  y <- m*c(1:nrow(df_count))
+  
+  df_y<-data.frame(y = y, counts = df_count$count)
+  
+  count_h<-c()
+  y_h<-c()
+  for (b in 1:(length(bin)-1)) {
+    count_h[b] <- sum(df_y$counts[(df_y$y > bin[b]) & (df_y$y <= bin[b+1])])
+    y_h[b]<-(bin[b]+bin[b+1])/2
+  }
+  
+  fy_h <- data.frame(y = y_h, fy = count_h)
+  
+  return(fy_h)
+}
+
+compute_spectra <- function(fy_h, bin){
+  
+  hist <- fy_h %>% 
+    mutate(BinWidth = diff(bin))
+  
+  hist$fy_bw <- hist$fy/hist$BinWidth
+  
+  B <- 1/diff(log10(hist$BinWidth))[1]
+  
+  # B<-1/0.05
+  C <- log(10)*diff(log10(hist$BinWidth))[1]
+  
+  hist$fy_bw_norm <- hist$fy_bw/(C*sum(hist$y*hist$fy_bw))
+  # hist$fy_norm <- (hist$counts)/(C*sum(hist$y*hist$count))
+  
+  hist$yfy <- hist$fy_bw_norm*hist$y
+  
+  hist$yfy_norm <- hist$yfy/(C*sum(hist$y*hist$yfy))
+  
+  hist$ydy <- hist$yfy_norm*hist$y
+  
+  hist_M <- fy_h %>% 
+    mutate(BinWidth = diff(bin))
+  
+  hist_M$fy_bw<-hist_M$fy/hist_M$BinWidth
+  hist_M$fy_bw_norm<-hist_M$fy_bw/(C*sum(hist_M$y*hist_M$fy))
+  
+  hist_M$yfy<-hist_M$fy_bw*hist_M$y
+  hist_M$yfy_norm<-hist_M$yfy/(C*sum(hist_M$y*hist_M$yfy))
+  hist_M$ydy<-hist_M$fy_bw*hist_M$y*hist_M$y
+  
+  #yF value
+  yF<-sum(hist_M$BinWidth*hist_M$yfy)/sum(hist_M$BinWidth*hist_M$fy_bw)
+  
+  #yD value
+  yD<-sum(hist_M$BinWidth*hist_M$ydy)/sum(hist_M$BinWidth*hist_M$yfy)
+  
+  y0<-(150)^2
+  
+  ystar<-(y0*sum(((1-exp(-(hist$y^2)/(y0)))*hist$BinWidth*hist$fy_bw)))/(yF*sum(hist$BinWidth*hist$fy_bw))
+  
+  return(list(histogram = hist, yF = yF, yD = yD, ystar = ystar))
+}
+
+select_gain <- function(gain){
+  if(gain == "M"){
+    m <- 0.46
+  }else if(gain == "L"){
+    m <- 0.444
+  }else{
+    return(-1)
+  }
+  
+  return(m)
+}
+
+```
+
+```{r}
+bin<-10^(seq(log10(1),log10(10000),length.out=100))
+```
+
+```{r}
+cut <- 20
+```
+
+## 03/16 - 148 MeV
+
+We made a first measurements at 1 nA but we weren't sure about the gain. This is the results.
+
+```{r}
+
+df <- fread("16March2024\\148MeV_muscle_1nA_medium_1.Spe")
+count <- as.numeric(df$`$SPEC_ID:`[12:4107]) %>% 
+  as.data.frame()
+count <- count %>% 
+  mutate(channel = 1:nrow(count))
+colnames(count)[1] <- "count"
+count$count2 <- count$count*count$channel^2
+count$Type <- "1nA - muscle"
+
+count$count[which(count$channel < cut)] <- 0
+
+sum(as.numeric(df$`$SPEC_ID:`[12:4107]))/as.numeric(strsplit(df$`$SPEC_ID:`[9]," ")[[1]][1]) 
+sum(as.numeric(df$`$SPEC_ID:`[(12 + 21):4107]))/as.numeric(strsplit(df$`$SPEC_ID:`[9]," ")[[1]][2]) 
+
+p <- count %>% 
+  filter(channel > cut) %>% 
+  ggplot(aes(channel, count2, color = Type)) +
+  geom_step(linewidth = 1) +
+  scale_x_log10() +
+  scale_color_manual(values = cb_b) +
+  # geom_vline(xintercept = 570, color = "maroon", linewidth = 1) +
+  xlab("Channel") + 
+  ylab("Counts")
+ggplotly(p)
+```
+
+This is the spectra in y.
+
+```{r}
+m <- select_gain("L")
+
+fy_h <- compute_calibration_adc(m, count, bin)
+
+df_plot <- data.frame(y = fy_h$y, fy = fy_h$fy)
+
+p_adc <- df_plot %>% 
+  ggplot(aes(x=y,y=fy)) +
+  geom_step(linewidth = 1) +
+  # scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),
+  #   labels = trans_format("log10", math_format(10^.x))) + 
+  scale_x_log10() +
+  xlab("y [keV/um]") +
+  ylab("f(y)")
+ggplotly(p_adc)
+
+spectra <- compute_spectra(fy_h, bin)
+  
+p_spec <- spectra$histogram %>% 
+  ggplot(aes(y,ydy)) + 
+  geom_step(linewidth = 1) +
+  # scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),
+  #   labels = trans_format("log10", math_format(10^.x))) + 
+  scale_x_log10() +
+  ylab("yd(y)")
+ggplotly(p_spec)
+
+```
+
+We made other changes that we do not understood, 20 minute measurements with 1nA at 70 MeV protons after muscle.
+
+```{r}
+df <- fread("16March2024\\148MeV_muscle_1nA_medium_1.Spe")
+count <- as.numeric(df$`$SPEC_ID:`[12:4107]) %>% 
+  as.data.frame()
+count <- count %>% 
+  mutate(channel = 1:nrow(count))
+colnames(count)[1] <- "count"
+count$count2 <- count$count*count$channel^2
+count$Type <- "1nA - muscle"
+
+count$count[which(count$channel < cut)] <- 0
+
+p <- count %>% 
+  filter(channel > cut) %>% 
+  ggplot(aes(channel, count2, color = Type)) +
+  geom_step(linewidth = 1) +
+  scale_x_log10() +
+  scale_color_manual(values = cb_b) +
+  # geom_vline(xintercept = 570, color = "maroon", linewidth = 1) +
+  xlab("Channel") + 
+  ylab("Counts")
+ggplotly(p)
+
+```
+
+```{r}
+
+par <- format(sum(as.numeric(df$`$SPEC_ID:`[(12 + cut):(4107)])),big.mark=",",scientific=FALSE)
+par_s <- format(sum(as.numeric(df$`$SPEC_ID:`[(12 + cut):(4107)]))/as.numeric(strsplit(df$`$SPEC_ID:`[9]," ")[[1]][1]),big.mark=",",scientific=FALSE)
+
+glue("Total events: {par}")
+glue("Event per second: {par_s}")
+
+```
+
+The spectra in y
+
+```{r}
+m <- select_gain("M")
+
+fy_h <- compute_calibration_adc(m, count, bin)
+
+df_plot <- data.frame(y = fy_h$y, fy = fy_h$fy)
+
+p_adc <- df_plot %>% 
+  ggplot(aes(x=y,y=fy)) +
+  geom_step(linewidth = 1) +
+  # scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),
+  #   labels = trans_format("log10", math_format(10^.x))) + 
+  scale_x_log10() +
+  xlab("y [keV/um]") +
+  ylab("f(y)")
+ggplotly(p_adc)
+
+spectra <- compute_spectra(fy_h, bin)
+  
+p_spec <- spectra$histogram %>% 
+  ggplot(aes(y,ydy)) + 
+  geom_step(linewidth = 1) +
+  # scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),
+  #   labels = trans_format("log10", math_format(10^.x))) + 
+  scale_x_log10() +
+  scale_y_log10() +
+  ylab("yd(y)")
+ggplotly(p_spec)
+```
+
+These are the second and third 20 minute shifts.
+
+```{r}
+
+df_1 <- fread("16March2024\\148MeV_muscle_1nA_medium_2.Spe")
+count_1 <- as.numeric(df_1$`$SPEC_ID:`[12:4107]) %>% 
+  as.data.frame()
+count_1 <- count_1 %>% 
+  mutate(channel = 1:nrow(count_1))
+colnames(count_1)[1] <- "count"
+count_1$count2 <- count_1$count*count_1$channel^2
+count_1$Type <- "1nA - muscle - 2"
+
+count_1$count[which(count_1$channel < cut)] <- 0
+
+p <- count %>% 
+  filter(channel > cut) %>% 
+  ggplot(aes(channel, count2, color = Type)) +
+  geom_step(linewidth = 1) +
+  scale_x_log10() +
+  scale_color_manual(values = cb_b) +
+  # geom_vline(xintercept = 570, color = "maroon", linewidth = 1) +
+  xlab("Channel") + 
+  ylab("Counts")
+ggplotly(p)
+
+```
+
+```{r}
+df_2 <- fread("16March2024\\148MeV_muscle_1nA_medium_3.Spe")
+count_2 <- as.numeric(df_2$`$SPEC_ID:`[12:4107]) %>% 
+  as.data.frame()
+count_2 <- count_2 %>% 
+  mutate(channel = 1:nrow(count_2))
+colnames(count_2)[1] <- "count"
+count_2$count2 <- count_2$count*count_2$channel^2
+count_2$Type <- "1nA - muscle - 3"
+
+count_2$count[which(count_2$channel < cut)] <- 0
+
+p <- count %>% 
+  filter(channel > cut) %>% 
+  ggplot(aes(channel, count2, color = Type)) +
+  geom_step(linewidth = 1) +
+  scale_x_log10() +
+  scale_color_manual(values = cb_b) +
+  # geom_vline(xintercept = 570, color = "maroon", linewidth = 1) +
+  xlab("Channel") + 
+  ylab("Counts")
+ggplotly(p)
+```
+
+```{r}
+p <- count %>% 
+  rbind(count_1, count_2) %>% 
+  filter(channel > cut) %>% 
+  ggplot(aes(channel, count2, color = Type)) +
+  geom_step(linewidth = 1) +
+  scale_x_log10() +
+  scale_color_manual(values = cb_b) +
+  # geom_vline(xintercept = 570, color = "maroon", linewidth = 1) +
+  xlab("Channel") + 
+  ylab("Counts")
+ggplotly(p)
+```
+
+```{r}
+par <- format(sum(as.numeric(df_2$`$SPEC_ID:`[(12 + cut):(4107)])),big.mark=",",scientific=FALSE)
+par_s <- format(sum(as.numeric(df_2$`$SPEC_ID:`[(12 + cut):(4107)]))/as.numeric(strsplit(df_2$`$SPEC_ID:`[9]," ")[[1]][1]),big.mark=",",scientific=FALSE)
+
+glue("Total events: {par}")
+glue("Event per second: {par_s}")
+```
+
+```{r}
+
+m <- select_gain("M")
+
+fy_h <- compute_calibration_adc(m, count_1, bin)
+
+df_plot_1 <- data.frame(y = fy_h$y, fy = fy_h$fy)
+
+p_adc <- df_plot_1 %>% 
+  ggplot(aes(x=y,y=fy)) +
+  geom_step(linewidth = 1) +
+  # scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),
+  #   labels = trans_format("log10", math_format(10^.x))) + 
+  scale_x_log10() +
+  xlab("y [keV/um]") +
+  ylab("f(y)")
+ggplotly(p_adc)
+
+spectra_1 <- compute_spectra(fy_h, bin)
+
+p_spec <- spectra_1$histogram %>% 
+  ggplot(aes(y,ydy)) + 
+  geom_step(linewidth = 1) +
+  # scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),
+  #   labels = trans_format("log10", math_format(10^.x))) + 
+  scale_x_log10() +
+  scale_y_log10() +
+  ylab("yd(y)")
+ggplotly(p_spec)
+
+fy_h <- compute_calibration_adc(m, count_2, bin)
+
+df_plot_2 <- data.frame(y = fy_h$y, fy = fy_h$fy)
+
+p_adc <- df_plot_2 %>% 
+  ggplot(aes(x=y,y=fy)) +
+  geom_step(linewidth = 1) +
+  # scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),
+  #   labels = trans_format("log10", math_format(10^.x))) + 
+  scale_x_log10() +
+  xlab("y [keV/um]") +
+  ylab("f(y)")
+ggplotly(p_adc)
+
+spectra_2 <- compute_spectra(fy_h, bin)
+  
+p_spec <- spectra_2$histogram %>% 
+  ggplot(aes(y,ydy)) + 
+  geom_step(linewidth = 1) +
+  # scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),
+  #   labels = trans_format("log10", math_format(10^.x))) + 
+  scale_x_log10() +
+  scale_y_log10() +
+  ylab("yd(y)")
+ggplotly(p_spec)
+
+```
+
+```{r}
+
+fy_h <- compute_calibration_adc(m, count_1, bin)
+df_plot_1 <- data.frame(y = fy_h$y, fy = fy_h$fy, 
+                        Type = "15nA - muscle - 2")
+
+fy_h <- compute_calibration_adc(m, count_2, bin)
+df_plot_2 <- data.frame(y = fy_h$y, fy = fy_h$fy, 
+                        Type = "15nA - muscle - 3")
+
+p_adc <- df_plot %>% 
+  mutate(Type = "15nA - muscle - 1") %>% 
+  rbind(df_plot_1, df_plot_2) %>% 
+  ggplot(aes(x=y, y=fy, color = Type)) +
+  geom_step(linewidth = 1) +
+  scale_color_manual(values = cb_b) +
+  # scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),
+  #   labels = trans_format("log10", math_format(10^.x))) + 
+  scale_x_log10() +
+  scale_y_log10() +
+  xlab("y [keV/um]") +
+  ylab("f(y)")
+ggplotly(p_adc)
+
+spectra_ <- spectra$histogram %>% 
+  mutate(Type = "1nA - muscle - 1")
+
+spectra_2_ <- spectra_2$histogram %>% 
+  mutate(Type = "1nA - muscle - 3")
+
+spectra_1_ <- spectra_1$histogram %>% 
+  mutate(Type = "1nA - muscle - 2")
+
+p_spec <- rbind(spectra_, spectra_1_, spectra_2_) %>% 
+  ggplot(aes(y, ydy, color = Type)) + 
+  geom_step(linewidth = 1) +
+    scale_color_manual(values = cb_b) +
+  # scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),
+  #   labels = trans_format("log10", math_format(10^.x))) + 
+  scale_x_log10() +
+  scale_y_log10() +
+  ylab("yd(y)")
+ggplotly(p_spec)
+```
+
+```{r}
+
+count_all <- count
+count_all$count <- count$count + count_1$count + count_2$count
+
+fy_h <- compute_calibration_adc(m, count_all, bin)
+
+df_plot_all <- data.frame(y = fy_h$y, fy = fy_h$fy)
+
+p_adc <- df_plot_all %>% 
+  ggplot(aes(x=y,y=fy)) +
+  geom_step(linewidth = 1) +
+  # scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),
+  #   labels = trans_format("log10", math_format(10^.x))) + 
+  scale_x_log10() +
+  xlab("y [keV/um]") +
+  ylab("f(y)")
+ggplotly(p_adc)
+
+spectra_all <- compute_spectra(fy_h, bin)
+  
+p_spec <- spectra_all$histogram %>% 
+  ggplot(aes(y,ydy)) + 
+  geom_step(linewidth = 1) +
+  # scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),
+  #   labels = trans_format("log10", math_format(10^.x))) + 
+  scale_x_log10() +
+  scale_y_log10() +
+  ylab("yd(y)")
+ggplotly(p_spec)
+```
+
+```{r}
+par <- format(sum(count_all$count[which(count_all$channel > cut)]),big.mark=",",scientific=FALSE)
+
+glue("Total events: {par}")
+```
+
+```{r}
+
+spectra_all_ <- spectra_all$histogram
+spectra_all_$Type <-  "All"
+
+p_spec <- rbind(spectra_, spectra_1_, spectra_2_, spectra_all_) %>% 
+  ggplot(aes(y, ydy, color = Type)) + 
+  geom_step(linewidth = 1) +
+    scale_color_manual(values = cb_b) +
+  # scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),
+  #   labels = trans_format("log10", math_format(10^.x))) + 
+  scale_x_log10() +
+  scale_y_log10() +
+  ylab("yd(y)")
+ggplotly(p_spec)
+```

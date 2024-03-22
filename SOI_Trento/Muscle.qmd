@@ -1,0 +1,482 @@
+---
+title: "Muscle"
+format: html
+execute:
+  echo: false
+  warning: false
+editor: visual
+---
+
+## Muscle 70 MeV
+
+```{r}
+library(stringr)
+library(gridExtra)
+library(maptools)
+library(ggplot2)
+library(ggalt)
+library(ggthemes)
+library(tibble)
+library(viridis)
+library(knitr)
+library(plotly)
+library(egg)
+library(ggpubr)
+library(GillespieSSA)
+library(MASS)
+library(rgl)
+library(zoo)
+library(Sim.DiffProc)
+library(doParallel)
+library(ggsci)
+library(deSolve)
+library(pracma)
+library(diffeqr)
+library(parallel)
+library(tidymodels)
+library(data.table)
+library(glue)
+
+# source("G:\\Other computers\\Il mio laptop\\Francesco\\Università\\Articoli\\Marta\\GSM2\\Dose Rate\\Code\\utilities_doserate.R")
+
+theme_set(theme_bw()+theme(plot.title = element_text(size=20, color="black"),
+                           axis.title.x = element_text(size=20, color="black"),
+                           axis.title.y = element_text(size=20, color="black"),
+                           axis.text.x = element_text(size=20, color="black"),
+                           axis.text.y = element_text(size=20, color="black"),
+                           legend.title = element_blank(),
+                           legend.text = element_text(size=20, color="black")))
+
+cb_a <- c("#0072B2","#000000","#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+cb_b <- c("#000000", "#E69F00", "#0072B2", "#6A3D9A" , "#009E73", "#F0E442", "#56B4E9", "#D55E00", "#CC79A7")
+cb_c <- c( "#56B4E9", "#009E73", "#0072B2", "#D55E00", "#CC79A7")
+
+cb_nob <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+c25 <- c(
+  "dodgerblue2", "#E31A1C", # red
+  "green4",
+  "#6A3D9A", # purple
+  "#FF7F00", # orange
+  "black", "gold1",
+  "skyblue2", "#FB9A99", # lt pink
+  "palegreen2",
+  "#CAB2D6", # lt purple
+  "#FDBF6F", # lt orange
+  "gray70", "khaki2",
+  "maroon", "orchid1", "deeppink1", "blue1", "steelblue4",
+  "darkturquoise", "green1", "yellow4", "yellow3",
+  "darkorange4", "brown"
+)
+```
+
+```{r}
+compute_calibration_adc <- function(m, df_count, bin, mv){
+
+  y <- m*df_count$mv
+  
+  df_y<-data.frame(y = y, counts = df_count$count)
+  
+  count_h<-c()
+  y_h<-c()
+  for (b in 1:(length(bin)-1)) {
+    count_h[b] <- sum(df_y$counts[(df_y$y > bin[b]) & (df_y$y <= bin[b+1])])
+    y_h[b]<-(bin[b]+bin[b+1])/2
+  }
+  
+  fy_h <- data.frame(y = y_h, fy = count_h)
+  
+  return(fy_h)
+}
+
+compute_spectra <- function(fy_h, bin){
+  
+  hist <- fy_h %>% 
+    mutate(BinWidth = diff(bin))
+  
+  hist$fy_bw <- hist$fy/hist$BinWidth
+  
+  B <- 1/diff(log10(hist$BinWidth))[1]
+  
+  # B<-1/0.05
+  C <- log(10)*diff(log10(hist$BinWidth))[1]
+  
+  hist$fy_bw_norm <- hist$fy_bw/(C*sum(hist$y*hist$fy_bw))
+  # hist$fy_norm <- (hist$counts)/(C*sum(hist$y*hist$count))
+  
+  hist$yfy <- hist$fy_bw_norm*hist$y
+  
+  hist$yfy_norm <- hist$yfy/(C*sum(hist$y*hist$yfy))
+  
+  hist$ydy <- hist$yfy_norm*hist$y
+  
+  hist_M <- fy_h %>% 
+    mutate(BinWidth = diff(bin))
+  
+  hist_M$fy_bw<-hist_M$fy/hist_M$BinWidth
+  hist_M$fy_bw_norm<-hist_M$fy_bw/(C*sum(hist_M$y*hist_M$fy))
+  
+  hist_M$yfy<-hist_M$fy_bw*hist_M$y
+  hist_M$yfy_norm<-hist_M$yfy/(C*sum(hist_M$y*hist_M$yfy))
+  hist_M$ydy<-hist_M$fy_bw*hist_M$y*hist_M$y
+  
+  #yF value
+  yF<-sum(hist_M$BinWidth*hist_M$yfy)/sum(hist_M$BinWidth*hist_M$fy_bw)
+  
+  #yD value
+  yD<-sum(hist_M$BinWidth*hist_M$ydy)/sum(hist_M$BinWidth*hist_M$yfy)
+  
+  ySK<-sum(hist_M$BinWidth*hist_M$ydy*hist_M$y)/sum(hist_M$BinWidth*hist_M$yfy)
+  
+  yK<-sum(hist_M$BinWidth*hist_M$ydy*hist_M$y*hist_M$y)/sum(hist_M$BinWidth*hist_M$yfy)
+  
+  y0<-(150)^2
+  
+  ystar<-(y0*sum(((1-exp(-(hist$y^2)/(y0)))*hist$BinWidth*hist$fy_bw)))/(yF*sum(hist$BinWidth*hist$fy_bw))
+  
+  return(list(histogram = hist, yF = yF, yD = yD, ystar = ystar, ySK = ySK, yK = yK))
+}
+
+select_gain <- function(ion, gain){
+  
+  if(ion == "H"){
+    if(gain == "M"){
+      m <- 0.46
+    }else if(gain == "L"){
+      m <- 0.444
+    }else if(gain == "C"){
+      m <- 0.866
+    }else{
+      return(-1)
+    }
+  }else if(ion == "C"){
+    if(gain == "M"){
+      m <- 0.866
+    }else if(gain == "L"){
+      m <- 0.866
+    }else{
+      return(-1)
+    }
+  }
+  
+  return(m)
+}
+```
+
+```{r}
+medium <- read.csv(file = "C:/Users/Utente/Documents/SOI_Trento/silicon_linearization_med_gain_H.csv")
+low <- read.csv(file = "C:/Users/Utente/Documents/SOI_Trento/silicon_linearization_low_gain_H.csv")
+```
+
+```{r}
+
+ion <- "H"
+cut <- 30
+bin <- 10^(seq(log10(1),log10(1000),length.out=100))
+gain <- "M"
+mv <- medium
+
+m <- select_gain(ion, gain)
+
+df_1 <- fread("16March2024\\70MeV_muscle_15nA_medium_1.Spe")
+
+count <- as.numeric(df_1$`$SPEC_ID:`[12:4107]) %>% 
+  as.data.frame() %>% 
+  mutate(mv = mv$INPUT..mV.)
+count <- count %>% 
+  mutate(channel = 1:nrow(count))
+colnames(count)[1] <- "count"
+count$count2 <- count$count*count$channel^2
+# count$Type <- list_files[1]
+count$Type <- "Muscle"
+
+count$count[which(count$channel < cut)] <- 0
+
+fy_h <- compute_calibration_adc(m, count, bin, mv)
+
+df_plot <- data.frame(y = fy_h$y, fy = fy_h$fy)
+
+spectra_s <- compute_spectra(fy_h, bin)$histogram %>% 
+  mutate(Cumulative = cumsum(ydy)/sum(ydy)) %>% 
+  mutate(Type = "Muscle 1")
+
+df_2 <- fread("16March2024\\70MeV_muscle_15nA_medium_2.Spe")
+
+count_2 <- as.numeric(df_2$`$SPEC_ID:`[12:4107]) %>% 
+  as.data.frame() %>% 
+  mutate(mv = mv$INPUT..mV.)
+count_2 <- count_2 %>% 
+  mutate(channel = 1:nrow(count_2))
+colnames(count_2)[1] <- "count"
+count_2$count2 <- count_2$count*count_2$channel^2
+# count$Type <- list_files[1]
+count_2$Type <- "Muscle"
+
+count_2$count[which(count_2$channel < cut)] <- 0
+
+fy_h <- compute_calibration_adc(m, count_2, bin, mv)
+
+df_plot <- data.frame(y = fy_h$y, fy = fy_h$fy)
+
+spectra_ <- compute_spectra(fy_h, bin)$histogram %>% 
+  mutate(Cumulative = cumsum(ydy)/sum(ydy)) %>% 
+  mutate(Type = "Muscle 2")
+spectra_s <- rbind(spectra_s,spectra_)
+
+df_3 <- fread("16March2024\\70MeV_muscle_15nA_medium_3.Spe")
+
+count_3 <- as.numeric(df_3$`$SPEC_ID:`[12:4107]) %>% 
+  as.data.frame() %>% 
+  mutate(mv = mv$INPUT..mV.)
+count_3 <- count_3 %>% 
+  mutate(channel = 1:nrow(count_3))
+colnames(count_3)[1] <- "count"
+count_3$count2 <- count_3$count*count_3$channel^2
+# count$Type <- list_files[1]
+count_3$Type <- "Muscle"
+
+count_3$count[which(count_3$channel < cut)] <- 0
+
+fy_h <- compute_calibration_adc(m, count_3, bin, mv)
+
+df_plot <- data.frame(y = fy_h$y, fy = fy_h$fy)
+
+spectra_ <- compute_spectra(fy_h, bin)$histogram %>% 
+  mutate(Cumulative = cumsum(ydy)/sum(ydy)) %>% 
+  mutate(Type = "Muscle 3")
+spectra_s <- rbind(spectra_s, spectra_)
+
+count_all <- count
+count_all$count <- count$count + count_2$count + count_3$count
+
+fy_h <- compute_calibration_adc(m, count_all, bin, mv)
+
+df_plot <- data.frame(y = fy_h$y, fy = fy_h$fy)
+
+spectra_all <- compute_spectra(fy_h, bin)$histogram %>% 
+  mutate(Cumulative = cumsum(ydy)/sum(ydy)) %>% 
+  mutate(Type = "Muscle")
+
+yD_m <- compute_spectra(fy_h, bin)$yD
+yF_m <- compute_spectra(fy_h, bin)$yF
+ystar_m <- compute_spectra(fy_h, bin)$ystar
+ySK_m <- compute_spectra(fy_h, bin)$ySK
+yK_m <- compute_spectra(fy_h, bin)$yK
+```
+
+```{r}
+df_1 <- fread("18March2024\\70MeV_0-5RW3_15nA_medium_3.Spe")
+
+count <- as.numeric(df_1$`$SPEC_ID:`[12:4107]) %>% 
+  as.data.frame() %>% 
+  mutate(mv = mv$INPUT..mV.)
+count <- count %>% 
+  mutate(channel = 1:nrow(count))
+colnames(count)[1] <- "count"
+count$count2 <- count$count*count$channel^2
+# count$Type <- list_files[1]
+count$Type <- "WET"
+
+count$count[which(count$channel < cut)] <- 0
+
+fy_h <- compute_calibration_adc(m, count, bin, mv)
+
+df_plot <- data.frame(y = fy_h$y, fy = fy_h$fy)
+
+spectra_ <- compute_spectra(fy_h, bin)$histogram %>% 
+  mutate(Cumulative = cumsum(ydy)/sum(ydy)) %>% 
+  mutate(Type = "WET 1")
+spectra_s <- rbind(spectra_s, spectra_)
+
+df_2 <- fread("18March2024\\70MeV_0-5RW3_15nA_medium_4.Spe")
+
+count_2 <- as.numeric(df_2$`$SPEC_ID:`[12:4107]) %>% 
+  as.data.frame() %>% 
+  mutate(mv = mv$INPUT..mV.)
+count_2 <- count_2 %>% 
+  mutate(channel = 1:nrow(count_2))
+colnames(count_2)[1] <- "count"
+count_2$count2 <- count_2$count*count_2$channel^2
+# count$Type <- list_files[1]
+count_2$Type <- "WET"
+
+count_2$count[which(count_2$channel < cut)] <- 0
+
+fy_h <- compute_calibration_adc(m, count_2, bin, mv)
+
+df_plot <- data.frame(y = fy_h$y, fy = fy_h$fy)
+
+spectra_ <- compute_spectra(fy_h, bin)$histogram %>% 
+  mutate(Cumulative = cumsum(ydy)/sum(ydy)) %>% 
+  mutate(Type = "WET 2")
+spectra_s <- rbind(spectra_s, spectra_)
+
+df_3 <- fread("18March2024\\70MeV_0-5RW3_15nA_medium_5.Spe")
+
+count_3 <- as.numeric(df_3$`$SPEC_ID:`[12:4107]) %>% 
+  as.data.frame() %>% 
+  mutate(mv = mv$INPUT..mV.)
+count_3 <- count_3 %>% 
+  mutate(channel = 1:nrow(count_3))
+colnames(count_3)[1] <- "count"
+count_3$count2 <- count_3$count*count_3$channel^2
+# count$Type <- list_files[1]
+count_3$Type <- "WET"
+
+count_3$count[which(count_3$channel < cut)] <- 0
+
+fy_h <- compute_calibration_adc(m, count_3, bin, mv)
+
+df_plot <- data.frame(y = fy_h$y, fy = fy_h$fy)
+
+spectra_ <- compute_spectra(fy_h, bin)$histogram %>% 
+  mutate(Cumulative = cumsum(ydy)/sum(ydy)) %>% 
+  mutate(Type = "WET 3")
+spectra_s <- rbind(spectra_s, spectra_)
+
+count_all <- count
+count_all$count <- count$count + count_2$count + count_3$count
+
+fy_h <- compute_calibration_adc(m, count_all, bin, mv)
+
+df_plot <- data.frame(y = fy_h$y, fy = fy_h$fy)
+
+yD_w <- compute_spectra(fy_h, bin)$yD
+yF_w <- compute_spectra(fy_h, bin)$yF
+ystar_w <- compute_spectra(fy_h, bin)$ystar
+ySK_w <- compute_spectra(fy_h, bin)$ySK
+yK_w <- compute_spectra(fy_h, bin)$yK
+
+spectra <- compute_spectra(fy_h, bin)$histogram %>% 
+  mutate(Cumulative = cumsum(ydy)/sum(ydy)) %>% 
+  mutate(Type = "WET") %>% 
+  rbind(spectra_all)
+```
+
+```{r}
+glue("yD muscle: {yD_m}")
+glue("yD WET: {yD_w}")
+```
+
+```{r}
+glue("yF muscle: {yF_m}")
+glue("yF WET: {yF_w}")
+```
+
+```{r}
+glue("ystar muscle: {ystar_m}")
+glue("ystar WET: {ystar_w}")
+```
+
+```{r}
+glue("Skewness muscle: {ySK_m}")
+glue("Skewness WET: {ySK_w}")
+```
+
+```{r}
+glue("Kurtosis muscle: {yK_m}")
+glue("Kurtosis WET: {yK_w}")
+```
+
+```{r}
+p_spec <- spectra %>% 
+  ggplot(aes(y, ydy, color = Type)) + 
+  geom_step(linewidth = 1) +
+  # scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),
+  #   labels = trans_format("log10", math_format(10^.x))) + 
+  scale_x_log10() +
+  scale_y_log10() +
+  scale_color_manual(values = c25) +
+  ylab("yd(y)")
+ggplotly(p_spec)
+```
+
+```{r}
+
+spectra_sall <- rbind(spectra, spectra_s)
+
+KS <- matrix(0, ncol = 8, nrow = 8)
+material <- unique(spectra_sall$Type)
+
+ctr1 <- 1
+for (mat1 in material) {
+  ctr2 <- 1
+  for (mat2 in material) {
+    
+    x_ <- spectra_sall %>% filter(Type == mat1)
+    y_ <- spectra_sall %>% filter(Type == mat2)
+    
+    KS[ctr1, ctr2] <- max(abs(x_$Cumulative - y_$Cumulative))
+    
+    ctr2 <- ctr2 + 1
+  }
+  ctr1 <- ctr1 + 1
+}
+KS <- as.data.frame(KS)
+colnames(KS) <- material
+row.names(KS) <- material
+
+kable(KS)
+```
+
+```{r}
+
+df_1 <- fread("19March2024\\70MeV_1cmBrain_medium_15nA_2.Spe")
+
+count <- as.numeric(df_1$`$SPEC_ID:`[12:4107]) %>% 
+  as.data.frame() %>% 
+  mutate(mv = mv$INPUT..mV.)
+count <- count %>% 
+  mutate(channel = 1:nrow(count))
+colnames(count)[1] <- "count"
+count$count2 <- count$count*count$channel^2
+# count$Type <- list_files[1]
+count$Type <- "Brain 1"
+
+count$count[which(count$channel < cut)] <- 0
+
+fy_h <- compute_calibration_adc(m, count, bin, mv)
+
+df_plot <- data.frame(y = fy_h$y, fy = fy_h$fy)
+
+spectra_b <- compute_spectra(fy_h, bin)$histogram %>% 
+  mutate(Cumulative = cumsum(ydy)/sum(ydy)) %>% 
+  mutate(Type = "Brain 1")
+spectra <- rbind(spectra, spectra_b)
+
+df_1 <- fread("19March2024\\70MeV_1cmRW3_medium_15nA_1.Spe")
+
+count <- as.numeric(df_1$`$SPEC_ID:`[12:4107]) %>% 
+  as.data.frame() %>% 
+  mutate(mv = mv$INPUT..mV.)
+count <- count %>% 
+  mutate(channel = 1:nrow(count))
+colnames(count)[1] <- "count"
+count$count2 <- count$count*count$channel^2
+# count$Type <- list_files[1]
+count$Type <- "WET brain"
+
+count$count[which(count$channel < cut)] <- 0
+
+fy_h <- compute_calibration_adc(m, count, bin, mv)
+
+df_plot <- data.frame(y = fy_h$y, fy = fy_h$fy)
+
+spectra_b <- compute_spectra(fy_h, bin)$histogram %>% 
+  mutate(Cumulative = cumsum(ydy)/sum(ydy)) %>% 
+  mutate(Type = "WET brain")
+spectra <- rbind(spectra, spectra_b)
+
+```
+
+```{r}
+p_spec <- spectra %>% 
+  ggplot(aes(y, ydy, color = Type)) + 
+  geom_step(linewidth = 1) +
+  # scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),
+  #   labels = trans_format("log10", math_format(10^.x))) + 
+  scale_x_log10() +
+  scale_y_log10() +
+  scale_color_manual(values = c25) +
+  ylab("yd(y)")
+ggplotly(p_spec)
+```
