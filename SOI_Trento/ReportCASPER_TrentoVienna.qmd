@@ -1,5 +1,5 @@
 ---
-title: "Muscle"
+title: "Report Trento Vienna"
 format: html
 execute:
   echo: false
@@ -163,8 +163,8 @@ select_gain <- function(ion, gain){
 ```
 
 ```{r}
-medium <- read.csv(file = "C:/Users/Utente/Documents/SOI_Trento/silicon_linearization_med_gain_H.csv")
-low <- read.csv(file = "C:/Users/Utente/Documents/SOI_Trento/silicon_linearization_low_gain_H.csv")
+medium <- read.csv(file = "silicon_linearization_med_gain_H.csv")
+low <- read.csv(file = "silicon_linearization_low_gain_H.csv")
 ```
 
 ```{r}
