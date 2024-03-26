@@ -159,8 +159,8 @@ select_gain <- function(ion, gain){
 ```
 
 ```{r}
-medium <- read.csv(file = "C:/Users/Utente/Documents/SOI_Trento/silicon_linearization_med_gain_C.csv")
-low <- read.csv(file = "C:/Users/Utente/Documents/SOI_Trento/silicon_linearization_low_gain_C.csv")
+medium <- read.csv(file = "silicon_linearization_med_gain_C.csv")
+low <- read.csv(file = "silicon_linearization_low_gain_C.csv")
 ```
 
 ```{r}
@@ -168,9 +168,9 @@ ion <- "C"
 cut <- 30
 bin<-10^(seq(log10(1),log10(10000),length.out=100))
 
-list_files <- list.files("~/SOI_Trento/MedAustron/",pattern = ".Spe")
+list_files <- list.files("MedAustron/",pattern = ".Spe")
 
-path <- glue("~/SOI_Trento/MedAustron/",list_files[1])
+path <- glue("MedAustron/",list_files[1])
 df <- fread(path)
 
 split <- str_split(list_files[1],pattern = "_")[[1]]
@@ -214,7 +214,7 @@ ctr <- 2
 for (file in list_files[-1]) {
   glue("{ctr} - {file}") %>% print()
   
-  path <- glue("~/SOI_Trento/MedAustron/",file)
+  path <- glue("MedAustron/",file)
   df <- fread(path)
   
   split <- str_split(file, pattern = "_")[[1]]
